@@ -9,9 +9,9 @@ services:
     healthCheckPath: /health
     envVars:
       - key: FIREBASE_PROJECT_ID
-        sync: false
+        value: icea53
       - key: API_ALLOWED_ORIGINS
-        sync: false
+        value: https://icea-bd.vercel.app
       - key: API_ALLOWED_EMAILS
         sync: false
       - key: API_RATE_LIMIT
