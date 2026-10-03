@@ -5,7 +5,7 @@ from functools import wraps
 from urllib.parse import quote
 
 from flask import Flask, jsonify, request, g
-from google.auth.exceptions import GoogleAuthError
+from google.auth.exceptions import GoogleAuthError, TransportError
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 
@@ -81,7 +81,7 @@ def session_stats():
 
 def verify_firebase_token(token):
     google_request = google_requests.Request()
-    return google_id_token.verify_oauth2_token(
+    return google_id_token.verify_firebase_token(
         token, google_request, audience=FIREBASE_PROJECT_ID
     )
 
@@ -105,6 +105,8 @@ def require_auth(fn):
 
         try:
             claims = verify_firebase_token(token)
+        except TransportError:
+            return jsonify({'erro': 'Nao foi possivel validar a sessao. Tente novamente.'}), 503
         except GoogleAuthError:
             return jsonify({'erro': 'Token invalido'}), 401
         except Exception:
