@@ -1,14 +1,31 @@
 import os
 import sqlite3
 from datetime import datetime
+from functools import wraps
 from urllib.parse import quote
-from flask import Flask, jsonify, request
+
+from flask import Flask, jsonify, request, g
+from google.auth.exceptions import GoogleAuthError
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'database.sqlite')
+DB_PATH = os.environ.get('DATABASE_PATH') or os.path.join(BASE_DIR, 'database.sqlite')
+
+FIREBASE_PROJECT_ID = (os.environ.get('FIREBASE_PROJECT_ID') or '').strip()
+
+
+def _csv_env(name):
+    return [v.strip() for v in (os.environ.get(name) or '').split(',') if v.strip()]
+
+
+ALLOWED_ORIGINS = _csv_env('API_ALLOWED_ORIGINS')
+ALLOWED_EMAILS = {v.lower() for v in _csv_env('API_ALLOWED_EMAILS')}
+RATE_LIMIT = os.environ.get('API_RATE_LIMIT', '120 per minute')
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
+app.json.sort_keys = False
 
 
 def connect():
@@ -62,20 +79,152 @@ def session_stats():
     return {s['session_id']: s for s in stats}
 
 
-@app.after_request
-def add_cors(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+def verify_firebase_token(token):
+    google_request = google_requests.Request()
+    return google_id_token.verify_oauth2_token(
+        token, google_request, audience=FIREBASE_PROJECT_ID
+    )
+
+
+def require_auth(fn):
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not FIREBASE_PROJECT_ID:
+            return jsonify({
+                'erro': 'API nao configurada',
+                'detalhe': 'FIREBASE_PROJECT_ID nao definido no servidor'
+            }), 503
+
+        header = request.headers.get('Authorization', '')
+        if not header.startswith('Bearer '):
+            return jsonify({'erro': 'Token ausente'}), 401
+
+        token = header[7:].strip()
+        if not token:
+            return jsonify({'erro': 'Token ausente'}), 401
+
+        try:
+            claims = verify_firebase_token(token)
+        except GoogleAuthError:
+            return jsonify({'erro': 'Token invalido'}), 401
+        except Exception:
+            return jsonify({'erro': 'Token invalido ou expirado'}), 401
+
+        email = (claims.get('email') or '').lower()
+        if ALLOWED_EMAILS and email not in ALLOWED_EMAILS:
+            return jsonify({'erro': 'Sem permissao'}), 403
+
+        g.user = claims
+        g.user_email = email
+        g.user_uid = claims.get('sub')
+        return fn(*args, **kwargs)
+    return wrapper
+
+
+def rate_limit_key():
+    return g.user_uid if getattr(g, 'user_uid', None) else request.remote_addr
+
+
+def client_ip():
+    forwarded = request.headers.get('X-Forwarded-For', '')
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return request.remote_addr
+
+
+buckets = {}
+
+
+@app.before_request
+def handle_preflight():
+    if request.method == 'OPTIONS':
+        return ('', 204)
+
+
+@app.before_request
+def enforce_rate_limit():
+
+    allowed = None
+    raw_limit = RATE_LIMIT.split()
+    if raw_limit:
+        try:
+            allowed = int(raw_limit[0])
+        except (ValueError, IndexError):
+            allowed = 120
+
+    if not allowed:
+        return None
+
+    key = client_ip()
+    now = datetime.now().timestamp()
+    window = 60.0
+
+    hits = [t for t in buckets.get(key, []) if now - t < window]
+    if len(hits) >= allowed:
+        return jsonify({'erro': 'Muitas requisicoes. Tente de novo em instantes.'}), 429
+    hits.append(now)
+    buckets[key] = hits
+
+    if len(buckets) > 5000:
+        for stale in [k for k, v in buckets.items() if not v or now - v[-1] > window]:
+            buckets.pop(stale, None)
+
+    response = None
     return response
 
 
+@app.after_request
+def add_cors(response):
+    origin = request.headers.get('Origin')
+    if origin and ALLOWED_ORIGINS and origin in ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+        response.headers['Access-Control-Max-Age'] = 86400
+    elif 'Access-Control-Allow-Origin' in response.headers:
+        del response.headers['Access-Control-Allow-Origin']
+
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.errorhandler(401)
+def handler_401(error):
+    return jsonify({'erro': 'Nao autorizado'}), 401
+
+
+@app.errorhandler(403)
+def handler_403(error):
+    return jsonify({'erro': 'Sem permissao'}), 403
+
+
+@app.errorhandler(429)
+def handler_429(error):
+    return jsonify({'erro': 'Muitas requisicoes'}), 429
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'ok',
+        'auth_configurado': bool(FIREBASE_PROJECT_ID),
+        'origens_permitidas': len(ALLOWED_ORIGINS),
+        'emails_permitidos': len(ALLOWED_EMAILS) > 0,
+    })
+
+
 @app.route('/', methods=['GET', 'OPTIONS'])
+@require_auth
 def home():
     if request.method == 'OPTIONS':
         return ('', 204)
     return jsonify({
         'nome': 'API EBD - leitura',
+        'autenticado': True,
+        'usuario': getattr(g, 'user_email', None),
         'endpoints': [
             '/stats',
             '/classes',
@@ -91,6 +240,7 @@ def home():
 
 
 @app.route('/stats', methods=['GET', 'OPTIONS'])
+@require_auth
 def stats():
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -121,6 +271,7 @@ def stats():
 
 
 @app.route('/classes', methods=['GET', 'OPTIONS'])
+@require_auth
 def classes():
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -143,6 +294,7 @@ def classes():
 
 
 @app.route('/classes/<class_id>', methods=['GET', 'OPTIONS'])
+@require_auth
 def class_detail(class_id):
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -167,6 +319,7 @@ def class_detail(class_id):
 
 
 @app.route('/classes/<class_id>/staff', methods=['GET', 'OPTIONS'])
+@require_auth
 def class_staff(class_id):
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -179,6 +332,7 @@ def class_staff(class_id):
 
 
 @app.route('/classes/<class_id>/members', methods=['GET', 'OPTIONS'])
+@require_auth
 def class_members(class_id):
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -194,6 +348,7 @@ def class_members(class_id):
 
 
 @app.route('/classes/<class_id>/sessions', methods=['GET', 'OPTIONS'])
+@require_auth
 def class_sessions(class_id):
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -212,6 +367,7 @@ def class_sessions(class_id):
 
 
 @app.route('/sessions', methods=['GET', 'OPTIONS'])
+@require_auth
 def sessions():
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -251,6 +407,7 @@ def sessions():
 
 
 @app.route('/sessions/<session_id>', methods=['GET', 'OPTIONS'])
+@require_auth
 def session_detail(session_id):
     if request.method == 'OPTIONS':
         return ('', 204)
@@ -291,6 +448,7 @@ def session_detail(session_id):
 
 
 @app.route('/members', methods=['GET', 'OPTIONS'])
+@require_auth
 def members():
     if request.method == 'OPTIONS':
         return ('', 204)

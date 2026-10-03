@@ -3,8 +3,16 @@ services:
     name: ebd-api
     runtime: python
     plan: free
+    pythonVersion: 3.12.7
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn api:app --bind 0.0.0.0:$PORT --workers 1 --timeout 30
+    startCommand: gunicorn api:app --bind 0.0.0.0:$PORT --workers 1 --timeout 60
+    healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.7"
+      - key: FIREBASE_PROJECT_ID
+        sync: false
+      - key: API_ALLOWED_ORIGINS
+        sync: false
+      - key: API_ALLOWED_EMAILS
+        sync: false
+      - key: API_RATE_LIMIT
+        value: "120 per minute"
