@@ -22,6 +22,7 @@ def _csv_env(name):
 ALLOWED_ORIGINS = _csv_env('API_ALLOWED_ORIGINS')
 ALLOWED_EMAILS = {v.lower() for v in _csv_env('API_ALLOWED_EMAILS')}
 RATE_LIMIT = os.environ.get('API_RATE_LIMIT', '120 per minute')
+REQUIRE_AUTH = (os.environ.get('API_REQUIRE_AUTH', 'true') or 'true').strip().lower() not in ('0', 'false', 'nao', 'no', 'off')
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
@@ -89,6 +90,9 @@ def verify_firebase_token(token):
 def require_auth(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
+        if not REQUIRE_AUTH:
+            return fn(*args, **kwargs)
+
         if not FIREBASE_PROJECT_ID:
             return jsonify({
                 'erro': 'API nao configurada',
