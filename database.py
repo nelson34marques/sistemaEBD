@@ -4,8 +4,13 @@ import json
 import tempfile
 from datetime import datetime
 import os
+import sys
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'database.sqlite')
+if getattr(sys, 'frozen', False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'database.sqlite')
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)

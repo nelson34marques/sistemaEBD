@@ -4,3 +4,5 @@ __pycache__/
 classes.json
 config.json
 sync_state.json
+build/
+dist/
