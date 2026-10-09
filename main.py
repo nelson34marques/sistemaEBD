@@ -1,6 +1,39 @@
-﻿import flet as ft
-import database as db
+﻿import base64
+import json
+import os
 from datetime import datetime
+
+import flet as ft
+import requests
+
+import database as db
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
+DEFAULT_API_URL = 'https://ebd-api-n7xg.onrender.com'
+
+
+def load_config():
+    config = {'api_url': '', 'sync_token': ''}
+    try:
+        with open(CONFIG_PATH, encoding='utf-8') as ficheiro:
+            data = json.load(ficheiro)
+            if isinstance(data, dict):
+                for chave, valor in data.items():
+                    if isinstance(valor, str) and valor.strip():
+                        config[chave] = valor.strip()
+    except (OSError, ValueError):
+        pass
+
+    config['api_url'] = (
+        os.environ.get('EBD_API_URL') or config.get('api_url') or DEFAULT_API_URL
+    ).rstrip('/')
+    config['sync_token'] = os.environ.get('EBD_SYNC_TOKEN') or config.get('sync_token', '')
+    return config
+
+
+CONFIG = load_config()
+
 
 def main(page: ft.Page):
     page.title = "Secretaria EBD"
@@ -14,13 +47,20 @@ def main(page: ft.Page):
     chamada_state = {"sessions": [], "checkboxes": {}}
     # Estado dos visitantes: sessão selecionada
     visit_state = {"session_id": None}
+    # Estado da publicação no site
+    publish_state = {"busy": False, "snack": None, "delete_id": None}
 
     # =============================================
     # FUNÇÕES / HANDLERS
     # =============================================
 
     def show_snack(msg, color=ft.Colors.GREEN_600):
-        page.overlay.append(ft.SnackBar(ft.Text(msg), bgcolor=color, open=True))
+        antigo = publish_state.get("snack")
+        if antigo is not None and antigo in page.overlay:
+            page.overlay.remove(antigo)
+        snack = ft.SnackBar(ft.Text(str(msg)), bgcolor=color, open=True)
+        publish_state["snack"] = snack
+        page.overlay.append(snack)
         page.update()
 
     def parse_date_br(value):
@@ -182,25 +222,46 @@ def main(page: ft.Page):
 
         for i, m in enumerate(members):
             birth = format_date_full(m['birth_date']) if m['birth_date'] else "-"
-            idade = db.calculate_age(m['birth_date']) if m['birth_date'] else "-"
+            idade = db.calculate_age(m['birth_date'])
+            idade = str(idade) if idade is not None else "-"
             classe = classes.get(m['class_id'], "Sem turma")
             phone = m['phone'] or "-"
             inscricao = format_date_full(m['enrolled_at'][:10]) if m.get('enrolled_at') else "-"
+            if m.get('photo'):
+                nome_cell = ft.Row([
+                    ft.Container(
+                        width=26, height=26, border_radius=13,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        content=ft.Image(src=m['photo'], fit=ft.BoxFit.COVER,
+                                         width=26, height=26),
+                    ),
+                    ft.Text(m['name']),
+                ], spacing=8, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            else:
+                nome_cell = ft.Text(m['name'])
             alunos_table.rows.append(
                 ft.DataRow(cells=[
                     ft.DataCell(ft.Text(str(i+1))),
-                    ft.DataCell(ft.Text(m['name'])),
+                    ft.DataCell(nome_cell),
                     ft.DataCell(ft.Text(birth)),
-                    ft.DataCell(ft.Text(str(idade))),
+                    ft.DataCell(ft.Text(idade)),
                     ft.DataCell(ft.Text(classe)),
                     ft.DataCell(ft.Text(phone)),
                     ft.DataCell(ft.Text(inscricao)),
-                    ft.DataCell(ft.IconButton(
-                        ft.Icons.EDIT_OUTLINED,
-                        icon_color=ft.Colors.BLUE_700,
-                        tooltip="Editar aluno",
-                        on_click=lambda e, mid=m['id']: open_edit_dialog(db.get_member_by_id(mid)),
-                    )),
+                    ft.DataCell(ft.Row([
+                        ft.IconButton(
+                            ft.Icons.EDIT_OUTLINED,
+                            icon_color=ft.Colors.BLUE_700,
+                            tooltip="Editar aluno",
+                            on_click=lambda e, mid=m['id']: open_edit_dialog(db.get_member_by_id(mid)),
+                        ),
+                        ft.IconButton(
+                            ft.Icons.DELETE_OUTLINE,
+                            icon_color=ft.Colors.RED_400,
+                            tooltip="Remover aluno",
+                            on_click=lambda e, mid=m['id'], nome=m['name']: open_delete_dialog(mid, nome),
+                        ),
+                    ], spacing=0)),
                 ])
             )
         alunos_count.value = f"{len(members)} alunos matriculados"
@@ -609,6 +670,309 @@ def main(page: ft.Page):
                 )
         page.update()
 
+    # ---------- PUBLICAR NO SITE ----------
+
+    def registar_erro(mensagem):
+        estado = db.load_sync_state()
+        estado['last_error'] = mensagem
+        estado['last_error_at'] = datetime.now().isoformat()
+        db.save_sync_state(estado)
+
+    async def finish_publish(tipo, mensagem):
+        publish_state["busy"] = False
+        publish_state["operacao"] = None
+        refresh_publish_view()
+        show_snack(mensagem, ft.Colors.GREEN_600 if tipo == "ok" else ft.Colors.RED)
+
+    def do_publish():
+        try:
+            conteudo = db.backup_to_bytes()
+            payload = {
+                'database': base64.b64encode(conteudo).decode('ascii'),
+                'message': 'Actualizar base de dados pelo app Secretaria EBD ({0})'.format(
+                    datetime.now().strftime('%d/%m/%Y %H:%M')
+                ),
+            }
+            headers = {}
+            if CONFIG.get('sync_token'):
+                headers['X-Sync-Token'] = CONFIG['sync_token']
+
+            resposta = requests.post(
+                CONFIG['api_url'] + '/sync', json=payload, headers=headers, timeout=180
+            )
+            try:
+                corpo = resposta.json()
+            except ValueError:
+                corpo = {}
+
+            if resposta.status_code == 200 and corpo.get('status') in ('publicado', 'sem_alteracoes'):
+                if corpo.get('status') == 'publicado':
+                    db.mark_all_synced()
+                    mensagem = 'Base de dados publicada! O site é actualizado dentro de 1 a 2 minutos.'
+                else:
+                    mensagem = 'Não há alterações novas para publicar.'
+                estado = db.load_sync_state()
+                estado['last_success'] = datetime.now().isoformat()
+                estado['last_result'] = corpo.get('status')
+                estado.pop('last_error', None)
+                db.save_sync_state(estado)
+                page.run_task(finish_publish, 'ok', mensagem)
+                return
+
+            detalhe = corpo.get('erro') or corpo.get('detalhe') or 'Erro HTTP {0}'.format(resposta.status_code)
+            registar_erro(detalhe)
+            page.run_task(finish_publish, 'erro', detalhe)
+
+        except requests.exceptions.Timeout:
+            detalhe = 'O servidor demorou demasiado a responder. Tente novamente dentro de instantes.'
+            registar_erro(detalhe)
+            page.run_task(finish_publish, 'erro', detalhe)
+        except requests.exceptions.RequestException:
+            detalhe = ('Sem ligação à internet. Os dados ficam guardados neste computador; '
+                       'publique novamente quando houver ligação.')
+            registar_erro(detalhe)
+            page.run_task(finish_publish, 'erro', detalhe)
+        except Exception as exc:
+            detalhe = 'Falha inesperada: {0}'.format(exc)
+            registar_erro(detalhe)
+            page.run_task(finish_publish, 'erro', detalhe)
+
+    def handle_publish(e):
+        if publish_state["busy"]:
+            return
+        publish_state["busy"] = True
+        publish_state["operacao"] = "publicar"
+        refresh_publish_view()
+        page.run_thread(do_publish)
+
+    # ---------- DESCARREGAR DO SITE ----------
+
+    ROTULOS_DESCARGA = {
+        'members': 'alunos',
+        'class_sessions': 'sessões',
+        'attendances': 'presenças',
+        'visitors': 'visitantes',
+    }
+
+    def _resumo_descarga(resumo):
+        partes = []
+        for tabela, dados in (resumo or {}).items():
+            total = (dados.get('inseridas') or 0) + (dados.get('actualizadas') or 0)
+            if total:
+                partes.append('{0} {1}'.format(total, ROTULOS_DESCARGA.get(tabela, tabela)))
+        if not partes:
+            return 'O site não tinha nada de novo. Os dados já estão actualizados.'
+        return 'Recebido do site: ' + ', '.join(partes) + '.'
+
+    async def finish_pull(tipo, mensagem):
+        publish_state["busy"] = False
+        publish_state["operacao"] = None
+        try:
+            load_alunos()
+            load_turmas()
+            load_equipe()
+            load_visitors()
+            load_chamada_dropdown()
+            load_visitantes_dropdown()
+        except Exception:
+            pass
+        refresh_publish_view()
+        show_snack(mensagem, ft.Colors.GREEN_600 if tipo == "ok" else ft.Colors.RED)
+
+    def do_pull():
+        try:
+            headers = {}
+            if CONFIG.get('sync_token'):
+                headers['X-Sync-Token'] = CONFIG['sync_token']
+
+            resposta = requests.get(
+                CONFIG['api_url'] + '/database', headers=headers, timeout=180
+            )
+            if resposta.status_code != 200:
+                try:
+                    corpo = resposta.json()
+                    detalhe = (corpo.get('erro') or corpo.get('detalhe')
+                               or 'Erro HTTP {0}'.format(resposta.status_code))
+                except ValueError:
+                    detalhe = 'Erro HTTP {0}'.format(resposta.status_code)
+                raise RuntimeError(detalhe)
+
+            remoto = resposta.content
+            if not remoto.startswith(b'SQLite format 3\x00'):
+                raise RuntimeError('O servidor devolveu uma resposta inesperada.')
+
+            db.init_db()
+            resultado, resumo = db.merge_bytes(db.backup_to_bytes(), remoto)
+            db.instalar_bytes(resultado)
+
+            mensagem = _resumo_descarga(resumo)
+            estado = db.load_sync_state()
+            estado['last_pull'] = datetime.now().isoformat()
+            estado.pop('last_error', None)
+            db.save_sync_state(estado)
+            page.run_task(finish_pull, 'ok', mensagem)
+            return
+
+        except requests.exceptions.Timeout:
+            detalhe = 'O servidor demorou demasiado a responder. Tente novamente dentro de instantes.'
+        except requests.exceptions.RequestException:
+            detalhe = ('Sem ligação à internet. Descarregue novamente quando houver ligação.')
+        except RuntimeError as exc:
+            detalhe = str(exc)
+        except ValueError as exc:
+            detalhe = str(exc)
+        except Exception as exc:
+            detalhe = 'Falha inesperada: {0}'.format(exc)
+
+        registar_erro(detalhe)
+        page.run_task(finish_pull, 'erro', detalhe)
+
+    def handle_pull(e):
+        if publish_state["busy"]:
+            return
+        publish_state["busy"] = True
+        publish_state["operacao"] = "descarregar"
+        refresh_publish_view()
+        page.run_thread(do_pull)
+
+    def refresh_publish_view():
+        pendentes = db.pending_changes()
+        estado = db.load_sync_state()
+
+        publish_pending.value = (
+            "{0} alterações por publicar".format(pendentes) if pendentes
+            else "Tudo publicado no site"
+        )
+        publish_pending.color = ft.Colors.ORANGE_700 if pendentes else ft.Colors.GREEN_700
+
+        ultimo = estado.get('last_success')
+        if ultimo:
+            try:
+                texto = datetime.fromisoformat(ultimo).strftime('%d/%m/%Y às %H:%M')
+            except ValueError:
+                texto = ultimo
+            publish_last.value = "Última publicação: {0}".format(texto)
+        else:
+            publish_last.value = "Este computador ainda nunca publicou dados no site."
+
+        ultimo_pull = estado.get('last_pull')
+        if ultimo_pull:
+            try:
+                texto_pull = datetime.fromisoformat(ultimo_pull).strftime('%d/%m/%Y às %H:%M')
+            except ValueError:
+                texto_pull = ultimo_pull
+            pull_last.value = "Última descarga do site: {0}".format(texto_pull)
+        else:
+            pull_last.value = "Este computador ainda nunca descarregou dados do site."
+
+        ultimo_erro = estado.get('last_error')
+        publish_result.value = "Último aviso: {0}".format(ultimo_erro) if ultimo_erro else ""
+        publish_result.color = ft.Colors.RED_600
+
+        if publish_state["busy"]:
+            if publish_state.get("operacao") == "descarregar":
+                publish_status.value = "A descarregar dados do site... não feche a aplicação."
+            else:
+                publish_status.value = "A publicar... não feche a aplicação."
+        elif pendentes:
+            publish_status.value = "Há dados novos neste computador que ainda não estão no site."
+        else:
+            publish_status.value = "O site está a par com este computador."
+
+        publish_button.disabled = publish_state["busy"]
+        publish_button.icon = ft.Icons.HOURGLASS_TOP if publish_state["busy"] else ft.Icons.CLOUD_UPLOAD
+        pull_button.disabled = publish_state["busy"]
+        pull_button.icon = ft.Icons.HOURGLASS_TOP if publish_state["busy"] else ft.Icons.CLOUD_DOWNLOAD
+        page.update()
+
+    publish_pending = ft.Text("", size=17, weight=ft.FontWeight.W_600)
+    publish_status = ft.Text("", size=14, color=ft.Colors.GREY_700)
+    publish_last = ft.Text("", size=14, color=ft.Colors.GREY_600)
+    publish_result = ft.Text("", size=13)
+    publish_button = ft.FilledButton(
+        "Publicar no site", icon=ft.Icons.CLOUD_UPLOAD, on_click=handle_publish,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_700, color=ft.Colors.WHITE),
+    )
+    pull_last = ft.Text("", size=13, color=ft.Colors.GREY_600)
+    pull_button = ft.FilledButton(
+        "Descarregar do site", icon=ft.Icons.CLOUD_DOWNLOAD, on_click=handle_pull,
+        style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_700, color=ft.Colors.WHITE),
+    )
+
+    publish_view = ft.Container(
+        padding=40,
+        expand=True,
+        content=ft.Column([
+            ft.Text("Sincronizar com o site", size=24, weight=ft.FontWeight.BOLD),
+            ft.Text("Envie os dados deste computador para o site e receba o que foi "
+                    "lá registado.", color=ft.Colors.GREY_700),
+            ft.Divider(),
+            ft.Card(
+                elevation=1,
+                bgcolor=ft.Colors.WHITE,
+                content=ft.Container(
+                    padding=22,
+                    content=ft.Column([
+                        ft.Text("Estado", size=16, weight=ft.FontWeight.W_600,
+                                color=ft.Colors.BLUE_900),
+                        publish_pending,
+                        publish_status,
+                        publish_last,
+                        publish_result,
+                        ft.Divider(height=16),
+                        ft.Row([
+                            publish_button,
+                            ft.Text("Servidor: {0}".format(CONFIG['api_url']),
+                                    size=12, color=ft.Colors.GREY_500),
+                        ], spacing=20, wrap=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ], spacing=10),
+                ),
+            ),
+            ft.Card(
+                elevation=1,
+                bgcolor=ft.Colors.WHITE,
+                content=ft.Container(
+                    padding=22,
+                    content=ft.Column([
+                        ft.Text("Descarregar do site", size=16, weight=ft.FontWeight.W_600,
+                                color=ft.Colors.BLUE_900),
+                        ft.Text("Junta a este computador tudo o que foi registado no site "
+                                "(alunos, visitantes, presenças e fotos). As alterações feitas "
+                                "aqui e ainda não publicadas nunca são perdidas.",
+                                color=ft.Colors.GREY_700),
+                        pull_last,
+                        ft.Row([
+                            pull_button,
+                            ft.Text("Use esta opção ao chegar a este computador.",
+                                    size=12, color=ft.Colors.GREY_500),
+                        ], spacing=20, wrap=True,
+                           vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                    ], spacing=10),
+                ),
+            ),
+            ft.Card(
+                elevation=1,
+                bgcolor=ft.Colors.WHITE,
+                content=ft.Container(
+                    padding=22,
+                    content=ft.Column([
+                        ft.Text("Como funciona", size=16, weight=ft.FontWeight.W_600,
+                                color=ft.Colors.BLUE_900),
+                        ft.Text("1. Todos os dados ficam guardados neste computador, mesmo sem internet."),
+                        ft.Text("2. Quando houver internet, carregue em «Publicar no site»."),
+                        ft.Text("3. O site é actualizado automaticamente 1 a 2 minutos depois."),
+                        ft.Text("4. Use «Descarregar do site» para receber o que foi registado "
+                                "no site; o que está pendente aqui não é apagado."),
+                        ft.Text("5. Depois de publicar, não use cópias antigas da base de dados "
+                                "noutro computador sem as actualizar primeiro.",
+                                color=ft.Colors.GREY_600),
+                    ], spacing=8),
+                ),
+            ),
+        ], spacing=20, expand=True, scroll=ft.ScrollMode.AUTO),
+    )
+
     # ---------- NAVEGAÇÃO ----------
 
     def rail_changed(e):
@@ -618,6 +982,7 @@ def main(page: ft.Page):
         equipe_view.visible = (idx == 2)
         chamada_view.visible = (idx == 3)
         visitantes_view.visible = (idx == 4)
+        publish_view.visible = (idx == 5)
 
         if idx == 0:
             load_alunos()
@@ -630,6 +995,8 @@ def main(page: ft.Page):
             load_chamada_dropdown()
         elif idx == 4:
             load_visitantes_dropdown()
+        elif idx == 5:
+            refresh_publish_view()
 
         page.update()
 
@@ -728,6 +1095,48 @@ def main(page: ft.Page):
         ],
     )
     page.overlay.append(edit_dialog)
+
+    # --- DIÁLOGO DE REMOÇÃO DE ALUNO ---
+    delete_text = ft.Text("", size=14)
+
+    def open_delete_dialog(member_id, name):
+        publish_state["delete_id"] = member_id
+        delete_text.value = (
+            f"Remover {name} da lista de alunos?\n\n"
+            "O aluno deixa de aparecer nas listagens e na chamada. "
+            "O histórico de presenças já registado é mantido."
+        )
+        delete_dialog.open = True
+        page.update()
+
+    def handle_delete_member(e):
+        member_id = publish_state.get("delete_id")
+        delete_dialog.open = False
+        if not member_id:
+            page.update()
+            return
+        if db.delete_member(member_id):
+            show_snack("Aluno removido da lista.")
+            load_alunos()
+            load_turmas()
+        else:
+            show_snack("Não foi possível remover o aluno.", ft.Colors.RED)
+        page.update()
+
+    delete_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Remover Aluno", weight=ft.FontWeight.BOLD),
+        content=delete_text,
+        actions=[
+            ft.TextButton("Cancelar",
+                          style=ft.ButtonStyle(color=ft.Colors.GREY_700),
+                          on_click=lambda e: setattr(delete_dialog, "open", False) or page.update()),
+            ft.FilledButton("Remover", icon=ft.Icons.DELETE_OUTLINE,
+                            style=ft.ButtonStyle(bgcolor=ft.Colors.RED_600, color=ft.Colors.WHITE),
+                            on_click=handle_delete_member),
+        ],
+    )
+    page.overlay.append(delete_dialog)
 
     alunos_count = ft.Text("", size=14, weight=ft.FontWeight.W_500, color=ft.Colors.GREY_700)
 
@@ -981,6 +1390,10 @@ def main(page: ft.Page):
             ft.NavigationRailDestination(
                 icon=ft.Icons.PEOPLE_OUTLINED, selected_icon=ft.Icons.PEOPLE, label="Visitantes"
             ),
+            ft.NavigationRailDestination(
+                icon=ft.Icons.CLOUD_SYNC_OUTLINED, selected_icon=ft.Icons.CLOUD_SYNC,
+                label="Sincronizar"
+            ),
         ],
         on_change=rail_changed,
     )
@@ -990,6 +1403,7 @@ def main(page: ft.Page):
     equipe_view.visible = False
     chamada_view.visible = False
     visitantes_view.visible = False
+    publish_view.visible = False
 
     # Layout Principal
     page.add(
@@ -997,7 +1411,8 @@ def main(page: ft.Page):
             [
                 rail,
                 ft.VerticalDivider(width=1),
-                ft.Column([alunos_view, turmas_view, equipe_view, chamada_view, visitantes_view], expand=True),
+                ft.Column([alunos_view, turmas_view, equipe_view, chamada_view,
+                           visitantes_view, publish_view], expand=True),
             ],
             expand=True,
         )

@@ -1,9 +1,11 @@
 import sqlite3
 import uuid
+import json
+import tempfile
 from datetime import datetime
 import os
 
-DB_PATH = 'database.sqlite'
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'database.sqlite')
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -11,14 +13,16 @@ def get_connection():
     return conn
 
 def calculate_age(birth_date_str):
-    """Calcula a idade baseada na data de nascimento (YYYY-MM-DD)."""
+    """Calcula a idade baseada na data de nascimento (YYYY-MM-DD).
+    Devolve None quando a data está vazia ou é inválida."""
+    if not birth_date_str:
+        return None
     try:
         birth_date = datetime.strptime(birth_date_str, "%Y-%m-%d")
         today = datetime.today()
-        age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
-        return age
-    except:
-        return 0
+        return today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+    except (ValueError, TypeError):
+        return None
 
 def init_db():
     conn = get_connection()
@@ -82,6 +86,10 @@ def init_db():
         pass
     try:
         cursor.execute("ALTER TABLE members ADD COLUMN enrolled_at TEXT")
+    except:
+        pass
+    try:
+        cursor.execute("ALTER TABLE members ADD COLUMN photo TEXT")
     except:
         pass
     # Preenche a data de inscrição com a data de criação dos registos antigos
@@ -165,8 +173,8 @@ def seed_classes():
         cursor.execute("SELECT id FROM classes WHERE id = ?", (c["id"],))
         if cursor.fetchone():
             cursor.execute(
-                "UPDATE classes SET name = ?, age_min = ?, age_max = ? WHERE id = ?",
-                (c["name"], c["min"], c["max"], c["id"])
+                "UPDATE classes SET age_min = ?, age_max = ? WHERE id = ?",
+                (c["min"], c["max"], c["id"])
             )
         else:
             cursor.execute(
@@ -177,6 +185,8 @@ def seed_classes():
     conn.close()
 
 def get_class_for_age(age):
+    if age is None:
+        return None
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -236,6 +246,30 @@ def update_member(member_id, name, birth_date, phone="", marital_status="",
 
     conn.close()
     return turma
+
+def set_member_photo(member_id, photo):
+    """Guarda a foto do aluno (data URL JPEG) e marca como não publicada."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE members SET photo = ?, synced = 0 WHERE id = ? AND deleted_at IS NULL",
+        (photo, member_id)
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return bool(changed)
+
+def get_member_photo(member_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT photo FROM members WHERE id = ? AND deleted_at IS NULL",
+        (member_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row['photo'] if row else None
 
 def get_all_members():
     conn = get_connection()
@@ -476,6 +510,344 @@ def delete_visitor(visitor_id):
     conn.commit()
     conn.close()
     sync_visitors_count(session_id)
+
+def delete_member(member_id):
+    """Remove o aluno da listagem (soft delete) sem apagar o histórico."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE members SET deleted_at = ?, synced = 0 WHERE id = ? AND deleted_at IS NULL",
+        (datetime.now().isoformat(), member_id)
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return bool(changed)
+
+SYNCED_TABLES = ('classes', 'members', 'class_sessions', 'attendances', 'staff', 'visitors')
+
+def pending_changes():
+    """N.º de registos ainda não publicados no site."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    total = 0
+    for table in SYNCED_TABLES:
+        try:
+            cursor.execute("SELECT COUNT(*) FROM {0} WHERE synced = 0".format(table))
+            total += cursor.fetchone()[0]
+        except sqlite3.OperationalError:
+            pass
+    conn.close()
+    return total
+
+def mark_all_synced():
+    conn = get_connection()
+    cursor = conn.cursor()
+    for table in SYNCED_TABLES:
+        try:
+            cursor.execute("UPDATE {0} SET synced = 1 WHERE synced = 0".format(table))
+        except sqlite3.OperationalError:
+            pass
+    conn.commit()
+    conn.close()
+
+def backup_to_bytes():
+    """Cópia consistente da base de dados, mesmo com a app a escrever."""
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix='.sqlite')
+    handle.close()
+    try:
+        destino = sqlite3.connect(handle.name)
+        try:
+            origem = get_connection()
+            try:
+                origem.backup(destino)
+            finally:
+                origem.close()
+            destino.commit()
+        finally:
+            destino.close()
+        with open(handle.name, 'rb') as ficheiro:
+            return ficheiro.read()
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
+
+
+def instalar_bytes(raw):
+    """Substitui a base de dados local por `raw` de forma atómica."""
+    if not raw.startswith(b'SQLite format 3\x00'):
+        raise ValueError('A base de dados recebida não é válida.')
+    destino = os.path.abspath(DB_PATH)
+    pasta = os.path.dirname(destino) or '.'
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix='.sqlite', dir=pasta)
+    try:
+        handle.write(raw)
+        handle.close()
+        conn = sqlite3.connect(handle.name)
+        try:
+            try:
+                verificacao = conn.execute('PRAGMA integrity_check').fetchone()[0]
+            except sqlite3.DatabaseError as erro:
+                raise ValueError('A base de dados recebida está corrompida ({0}).'.format(erro))
+        finally:
+            conn.close()
+        if verificacao != 'ok':
+            raise ValueError('A base de dados recebida está corrompida ({0}).'.format(verificacao))
+        os.replace(handle.name, destino)
+    finally:
+        try:
+            if os.path.exists(handle.name):
+                os.unlink(handle.name)
+        except OSError:
+            pass
+    for sufixo in ('-wal', '-shm'):
+        obsoleto = destino + sufixo
+        if os.path.exists(obsoleto):
+            try:
+                os.unlink(obsoleto)
+            except OSError:
+                pass
+    return destino
+
+
+def _pragma_table_info(conn, table, schema=''):
+    prefix = '{0}.'.format(schema) if schema else ''
+    existe = conn.execute(
+        "SELECT name FROM {0}sqlite_master WHERE type = 'table' AND name = ?".format(prefix),
+        (table,)
+    ).fetchone()
+    if not existe:
+        return []
+    return [
+        {'name': row[1], 'pk': bool(row[5])}
+        for row in conn.execute('PRAGMA {0}table_info({1})'.format(prefix, table))
+    ]
+
+
+def _row_differs(actual, remota, comuns):
+    return any(actual[c] != remota[c] for c in comuns)
+
+
+def merge_bytes(base_raw, remote_raw):
+    """Junta `remote_raw` (versão publicada/site) em `base_raw` e devolve o resultado.
+
+    Regra: o que a app ainda não publicou (synced = 0) mantém-se; o resto vem do
+    remoto, que é a versão já publicada. Sessões com a mesma turma e data são
+    reutilizadas em vez de duplicadas, e os membros são emparelhados por nome +
+    data de nascimento quando os identificadores não coincidem.
+    Devolve (bytes do resultado, {tabela: {'inseridas': n, 'actualizadas': n}}).
+    """
+    tmp_base = tempfile.NamedTemporaryFile(delete=False, suffix='.sqlite')
+    tmp_base.close()
+    tmp_remoto = tempfile.NamedTemporaryFile(delete=False, suffix='.sqlite')
+    tmp_remoto.close()
+    try:
+        with open(tmp_base.name, 'wb') as ficheiro:
+            ficheiro.write(base_raw)
+        with open(tmp_remoto.name, 'wb') as ficheiro:
+            ficheiro.write(remote_raw)
+
+        conn = sqlite3.connect(tmp_base.name)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute('ATTACH DATABASE ? AS remoto', (tmp_remoto.name,))
+            resumo = {}
+
+            # 1) Sessões: reaproveita a sessão local da mesma turma e data
+            mapa_sessoes = {}
+            if _pragma_table_info(conn, 'class_sessions') and _pragma_table_info(conn, 'class_sessions', 'remoto'):
+                locais = {r['id']: r for r in conn.execute('SELECT * FROM class_sessions')}
+                por_chave = {(r['class_id'], r['date']): r['id'] for r in locais.values()}
+                inseridas = actualizadas = 0
+                for rem in conn.execute('SELECT * FROM remoto.class_sessions').fetchall():
+                    actual = locais.get(rem['id'])
+                    if actual is not None:
+                        mapa_sessoes[rem['id']] = actual['id']
+                        if actual['synced'] == 1 and _row_differs(actual, rem, ('date', 'class_id')):
+                            conn.execute('UPDATE class_sessions SET date = ?, class_id = ?, synced = 1 WHERE id = ?',
+                                         (rem['date'], rem['class_id'], actual['id']))
+                            actualizadas += 1
+                        continue
+                    chave = (rem['class_id'], rem['date'])
+                    if chave in por_chave:
+                        mapa_sessoes[rem['id']] = por_chave[chave]
+                        continue
+                    try:
+                        conn.execute(
+                            'INSERT INTO class_sessions (id, class_id, date, visitors_count, created_at, synced) '
+                            'VALUES (?, ?, ?, ?, ?, 1)',
+                            (rem['id'], rem['class_id'], rem['date'], rem['visitors_count'], rem['created_at'])
+                        )
+                    except (sqlite3.IntegrityError, IndexError, KeyError):
+                        continue
+                    mapa_sessoes[rem['id']] = rem['id']
+                    por_chave[chave] = rem['id']
+                    inseridas += 1
+                resumo['class_sessions'] = {'inseridas': inseridas, 'actualizadas': actualizadas}
+
+            # 2) Tabelas em que a chave é o identificador
+            mapa_membros = {}
+            for tabela in ('classes', 'members', 'staff'):
+                info_local = _pragma_table_info(conn, tabela)
+                info_remoto = _pragma_table_info(conn, tabela, 'remoto')
+                if not info_local or not info_remoto:
+                    continue
+                colunas_remotas = {r['name'] for r in info_remoto}
+                comuns = [c['name'] for c in info_local if c['name'] in colunas_remotas]
+                pk = next((c['name'] for c in info_local if c['pk']), 'id')
+                if pk not in comuns:
+                    continue
+                locais = {r[pk]: r for r in conn.execute('SELECT * FROM {0}'.format(tabela))}
+                inseridas = actualizadas = 0
+                emparelar_membros = tabela == 'members'
+
+                def _inserir(rem, extras=None):
+                    valores = []
+                    for coluna in comuns:
+                        if extras and coluna in extras:
+                            valores.append(extras[coluna])
+                        elif coluna == 'synced':
+                            valores.append(1)
+                        else:
+                            valores.append(rem[coluna])
+                    conn.execute(
+                        'INSERT INTO {0} ({1}) VALUES ({2})'.format(
+                            tabela, ', '.join('"{0}"'.format(c) for c in comuns),
+                            ', '.join('?' for _ in comuns)
+                        ),
+                        valores
+                    )
+
+                for rem in conn.execute('SELECT * FROM remoto.{0}'.format(tabela)).fetchall():
+                    actual = locais.get(rem[pk])
+                    if emparelar_membros and actual is None:
+                        pareado = conn.execute(
+                            'SELECT id FROM members WHERE name = ? AND birth_date = ? AND deleted_at IS NULL '
+                            'ORDER BY created_at LIMIT 1',
+                            (rem['name'], rem['birth_date'])
+                        ).fetchone()
+                        if pareado:
+                            mapa_membros[rem[pk]] = pareado['id']
+                            continue
+                    if actual is None:
+                        try:
+                            _inserir(rem)
+                        except sqlite3.IntegrityError:
+                            continue
+                        if emparelar_membros:
+                            mapa_membros[rem[pk]] = rem[pk]
+                        inseridas += 1
+                        continue
+                    if emparelar_membros:
+                        mapa_membros[rem[pk]] = actual[pk]
+                    difere = [c for c in comuns if c != pk]
+                    if actual['synced'] == 1 and difere and _row_differs(actual, rem, difere):
+                        conn.execute(
+                            'UPDATE {0} SET {1} WHERE "{2}" = ?'.format(
+                                tabela, ', '.join('"{0}" = ?'.format(c) for c in difere), pk
+                            ),
+                            [rem[c] for c in difere] + [rem[pk]]
+                        )
+                        actualizadas += 1
+                resumo[tabela] = {'inseridas': inseridas, 'actualizadas': actualizadas}
+
+            # 3) Presenças (aproveita as sessões e membros já fundidos)
+            if _pragma_table_info(conn, 'attendances') and _pragma_table_info(conn, 'attendances', 'remoto'):
+                existentes = {
+                    (r['session_id'], r['member_id']): r
+                    for r in conn.execute('SELECT * FROM attendances')
+                }
+                membros = {r['id'] for r in conn.execute('SELECT id FROM members')}
+                sessoes = {r['id'] for r in conn.execute('SELECT id FROM class_sessions')}
+                inseridos = set()
+                inseridas = actualizadas = 0
+                for rem in conn.execute('SELECT * FROM remoto.attendances').fetchall():
+                    sessao = mapa_sessoes.get(rem['session_id'], rem['session_id'])
+                    membro = mapa_membros.get(rem['member_id'], rem['member_id'])
+                    if membro not in membros or sessao not in sessoes:
+                        continue
+                    par = (sessao, membro)
+                    if par in inseridos:
+                        continue
+                    actual = existentes.get(par)
+                    if actual is None:
+                        try:
+                            conn.execute(
+                                'INSERT INTO attendances (id, session_id, member_id, is_present, created_at, synced) '
+                                'VALUES (?, ?, ?, ?, ?, 1)',
+                                (rem['id'], sessao, membro, rem['is_present'], rem['created_at'])
+                            )
+                        except sqlite3.IntegrityError:
+                            continue
+                        inseridos.add(par)
+                        inseridas += 1
+                    elif actual['synced'] == 1 and actual['is_present'] != rem['is_present']:
+                        conn.execute('UPDATE attendances SET is_present = ?, synced = 1 WHERE id = ?',
+                                     (rem['is_present'], actual['id']))
+                        actualizadas += 1
+                resumo['attendances'] = {'inseridas': inseridas, 'actualizadas': actualizadas}
+
+            # 4) Visitantes (aproveita as sessões fundidas, sem duplicar nomes)
+            if _pragma_table_info(conn, 'visitors') and _pragma_table_info(conn, 'visitors', 'remoto'):
+                nomes = {
+                    (r['session_id'], r['name'])
+                    for r in conn.execute('SELECT session_id, name FROM visitors WHERE deleted_at IS NULL')
+                }
+                existentes = {r['id'] for r in conn.execute('SELECT id FROM visitors')}
+                inseridas = actualizadas = 0
+                for rem in conn.execute('SELECT * FROM remoto.visitors').fetchall():
+                    sessao = mapa_sessoes.get(rem['session_id'])
+                    if not sessao:
+                        continue
+                    if rem['id'] in existentes:
+                        continue
+                    if (sessao, rem['name']) in nomes:
+                        continue
+                    try:
+                        conn.execute(
+                            'INSERT INTO visitors (id, session_id, name, created_at, synced, deleted_at) '
+                            'VALUES (?, ?, ?, ?, 1, NULL)',
+                            (rem['id'], sessao, rem['name'], rem['created_at'])
+                        )
+                    except sqlite3.IntegrityError:
+                        continue
+                    existentes.add(rem['id'])
+                    nomes.add((sessao, rem['name']))
+                    inseridas += 1
+                resumo['visitors'] = {'inseridas': inseridas, 'actualizadas': actualizadas}
+
+            conn.commit()
+        finally:
+            conn.close()
+
+        with open(tmp_base.name, 'rb') as ficheiro:
+            return ficheiro.read(), resumo
+    finally:
+        for caminho in (tmp_base.name, tmp_remoto.name):
+            try:
+                os.unlink(caminho)
+            except OSError:
+                pass
+
+
+SYNC_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sync_state.json')
+
+def load_sync_state():
+    try:
+        with open(SYNC_STATE_PATH, encoding='utf-8') as ficheiro:
+            estado = json.load(ficheiro)
+            return estado if isinstance(estado, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def save_sync_state(estado):
+    try:
+        with open(SYNC_STATE_PATH, 'w', encoding='utf-8') as ficheiro:
+            json.dump(estado, ficheiro, ensure_ascii=False, indent=2)
+    except OSError:
+        pass
 
 # Inicializa ao importar
 init_db()

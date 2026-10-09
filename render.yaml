@@ -18,3 +18,16 @@ services:
         value: "120 per minute"
       - key: API_REQUIRE_AUTH
         value: "false"
+      # Publicação da base de dados a partir do app desktop (botão "Publicar no site")
+      - key: SYNC_TOKEN
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_REPO
+        value: nelson34marques/sistemaEBD
+      - key: GITHUB_PATH
+        value: database.sqlite
+      - key: GITHUB_BRANCH
+        value: main
+      - key: GITHUB_COMMIT_MESSAGE
+        value: Actualizar base de dados pelo app Secretaria EBD

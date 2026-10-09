@@ -2,3 +2,5 @@ venv/
 __pycache__/
 *.pyc
 classes.json
+config.json
+sync_state.json
