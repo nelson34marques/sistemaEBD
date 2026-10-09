@@ -265,7 +265,7 @@ def health():
         'status': 'ok',
         'auth_configurado': bool(FIREBASE_PROJECT_ID),
         'origens_permitidas': len(ALLOWED_ORIGINS),
-        'emails_permitidos': len(API_ALLOWED_EMAILS) > 0,
+        'emails_permitidos': len(ALLOWED_EMAILS) > 0,
         'sync_configurado': bool(SYNC_TOKEN and GITHUB_TOKEN and GITHUB_REPO),
         'pendentes_publicar': pendentes,
     })
