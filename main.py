@@ -15,6 +15,7 @@ DEFAULT_API_URL = 'https://ebd-api-n7xg.onrender.com'
 
 def load_config():
     config = {'api_url': '', 'sync_token': ''}
+    config_encontrado = False
     try:
         with open(CONFIG_PATH, encoding='utf-8') as ficheiro:
             data = json.load(ficheiro)
@@ -22,13 +23,17 @@ def load_config():
                 for chave, valor in data.items():
                     if isinstance(valor, str) and valor.strip():
                         config[chave] = valor.strip()
+                        if chave == 'sync_token':
+                            config_encontrado = True
     except (OSError, ValueError):
         pass
 
     config['api_url'] = (
         os.environ.get('EBD_API_URL') or config.get('api_url') or DEFAULT_API_URL
     ).rstrip('/')
-    config['sync_token'] = os.environ.get('EBD_SYNC_TOKEN') or config.get('sync_token', '')
+    env_token = os.environ.get('EBD_SYNC_TOKEN', '')
+    config['sync_token'] = env_token or config.get('sync_token', '')
+    config['token_source'] = 'env' if env_token else ('config' if config_encontrado else 'none')
     return config
 
 
@@ -720,6 +725,11 @@ def main(page: ft.Page):
                 return
 
             detalhe = corpo.get('erro') or corpo.get('detalhe') or 'Erro HTTP {0}'.format(resposta.status_code)
+            if resposta.status_code == 401 and not CONFIG.get('sync_token'):
+                detalhe = 'Token de sincronização inválido. O config.json não tem sync_token definido.'
+            elif resposta.status_code == 401:
+                detalhe = ('Token de sincronização inválido. O token no config.json não corresponde '
+                           'ao SYNC_TOKEN no Render. Verifica se são exactamente iguais.')
             registar_erro(detalhe)
             page.run_task(finish_publish, 'erro', detalhe)
 
@@ -795,6 +805,17 @@ def main(page: ft.Page):
                                or 'Erro HTTP {0}'.format(resposta.status_code))
                 except ValueError:
                     detalhe = 'Erro HTTP {0}'.format(resposta.status_code)
+                if resposta.status_code == 401 and not CONFIG.get('sync_token'):
+                    raise RuntimeError('Token inválido. O config.json não tem sync_token definido.')
+                if resposta.status_code == 401:
+                    raise RuntimeError(
+                        'Token inválido. O sync_token do config.json ({0}...{1}, '
+                        'origem: {2}) não corresponde ao SYNC_TOKEN do Render.'.format(
+                            CONFIG['sync_token'][:8],
+                            CONFIG['sync_token'][-8:],
+                            CONFIG.get('token_source', '?'),
+                        )
+                    )
                 raise RuntimeError(detalhe)
 
             remoto = resposta.content
