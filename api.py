@@ -228,7 +228,7 @@ def add_cors(response):
     if origin and ALLOWED_ORIGINS and origin in ALLOWED_ORIGINS:
         response.headers['Access-Control-Allow-Origin'] = origin
         response.headers['Vary'] = 'Origin'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Max-Age'] = 86400
     elif 'Access-Control-Allow-Origin' in response.headers:
@@ -703,6 +703,30 @@ def criar_visitante():
         'sessionId': sessao['id'],
         'publicacao': publicacao,
     }), 201
+
+
+@app.route('/visitors/<visitor_id>', methods=['DELETE', 'OPTIONS'])
+@require_write
+def eliminar_visitante(visitor_id):
+    if request.method == 'OPTIONS':
+        return ('', 204)
+    registo = query('''
+        SELECT v.name, v.session_id, cs.date, cs.class_id
+        FROM visitors v
+        JOIN class_sessions cs ON cs.id = v.session_id
+        WHERE v.id = ? AND v.deleted_at IS NULL
+    ''', (visitor_id,))
+    if not registo:
+        return jsonify({'erro': 'Visitante não encontrado.'}), 404
+
+    db.delete_visitor(visitor_id)
+    publicacao = _publicar_local('Eliminar visitante pelo site: {0}'.format(registo[0]['name']))
+    return jsonify({
+        'id': visitor_id,
+        'name': registo[0]['name'],
+        'deleted': True,
+        'publicacao': publicacao,
+    }), 200
 
 
 @app.route('/attendance', methods=['POST', 'OPTIONS'])
