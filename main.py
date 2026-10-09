@@ -63,12 +63,12 @@ def main(page: ft.Page):
     # TEMA / ESTILOS GLOBAIS
     # =============================================
 
-    PRIMARIA = ft.Colors.INDIGO_600
-    PRIMARIA_CLARA = ft.Colors.INDIGO_50
-    PRIMARIA_ESCURA = ft.Colors.INDIGO_900
-    SUCESSO = ft.Colors.EMERALD_600
-    SUCESSO_CLARA = ft.Colors.EMERALD_50
-    ALERTA = ft.Colors.RED_500
+    PRIMARIA = ft.Colors.BLUE_700
+    PRIMARIA_CLARA = ft.Colors.BLUE_50
+    PRIMARIA_ESCURA = ft.Colors.BLUE_900
+    SUCESSO = ft.Colors.GREEN_600
+    SUCESSO_CLARA = ft.Colors.GREEN_50
+    ALERTA = ft.Colors.RED_600
     ALERTA_CLARA = ft.Colors.RED_50
     TEXTO = ft.Colors.GREY_900
     TEXTO_SECUNDARIO = ft.Colors.GREY_600
@@ -1443,46 +1443,38 @@ def main(page: ft.Page):
         min_width=90,
         min_extended_width=200,
         bgcolor=PRIMARIA_CLARA,
-        selected_icon_content=ft.Icon(ft.Icons.PERSON_ADD, color=ft.Colors.WHITE),
         indicator_color=PRIMARIA,
-        indicator_border_radius=12,
         group_alignment=-0.9,
         destinations=[
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.PERSON_ADD_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.PERSON_ADD, color=ft.Colors.WHITE),
                 label="Alunos",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.CLASS_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.CLASS_, color=ft.Colors.WHITE),
                 label="Turmas",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.GROUPS_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.GROUPS, color=ft.Colors.WHITE),
                 label="Equipe",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.CHECKLIST_RTL_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.CHECKLIST_RTL, color=ft.Colors.WHITE),
                 label="Chamada",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.PEOPLE_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.PEOPLE, color=ft.Colors.WHITE),
                 label="Visitantes",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
                 icon=ft.Icon(ft.Icons.CLOUD_SYNC_OUTLINED, color=TEXTO_SECUNDARIO),
                 selected_icon=ft.Icon(ft.Icons.CLOUD_SYNC, color=ft.Colors.WHITE),
                 label="Sincronizar",
-                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
         ],
         on_change=rail_changed,
