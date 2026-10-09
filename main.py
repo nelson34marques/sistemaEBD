@@ -1,4 +1,4 @@
-﻿import base64
+import base64
 import json
 import os
 from datetime import datetime
@@ -43,10 +43,14 @@ CONFIG = load_config()
 def main(page: ft.Page):
     page.title = "Secretaria EBD"
     page.theme_mode = ft.ThemeMode.LIGHT
-    page.bgcolor = ft.Colors.WHITE
+    page.bgcolor = ft.Colors.GREY_50
     page.padding = 0
     page.window.width = 1400
     page.window.height = 850
+    page.fonts = {
+        "Inter": "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuLyfAZ9hiA.woff2",
+        "InterBold": "https://fonts.gstatic.com/s/inter/v13/UcCO3FwrK3iLTeHuS_fvQtMwCp50KnMw2boKoduKmMEVuFuYAZ9hiA.woff2",
+    }
 
     # Estado da chamada: sessões exibidas e checkboxes por (sessão, aluno)
     chamada_state = {"sessions": [], "checkboxes": {}}
@@ -56,14 +60,59 @@ def main(page: ft.Page):
     publish_state = {"busy": False, "snack": None, "delete_id": None}
 
     # =============================================
+    # TEMA / ESTILOS GLOBAIS
+    # =============================================
+
+    PRIMARIA = ft.Colors.INDIGO_600
+    PRIMARIA_CLARA = ft.Colors.INDIGO_50
+    PRIMARIA_ESCURA = ft.Colors.INDIGO_900
+    SUCESSO = ft.Colors.EMERALD_600
+    SUCESSO_CLARA = ft.Colors.EMERALD_50
+    ALERTA = ft.Colors.RED_500
+    ALERTA_CLARA = ft.Colors.RED_50
+    TEXTO = ft.Colors.GREY_900
+    TEXTO_SECUNDARIO = ft.Colors.GREY_600
+    TEXTO_TERCIARIO = ft.Colors.GREY_500
+    SUPERFICIE = ft.Colors.WHITE
+    BORDA = ft.Colors.GREY_200
+
+    def estilo_card():
+        return {
+            "bgcolor": SUPERFICIE,
+            "border_radius": 16,
+            "shadow": ft.BoxShadow(
+                blur_radius=12,
+                color=ft.Colors.with_opacity(0.08, ft.Colors.BLACK),
+                offset=ft.Offset(0, 4),
+            ),
+        }
+
+    def estilo_botao(cor=PRIMARIA):
+        return ft.ButtonStyle(
+            bgcolor=cor,
+            color=ft.Colors.WHITE,
+            shape=ft.RoundedRectangleBorder(radius=10),
+            padding=ft.padding.symmetric(horizontal=20, vertical=14),
+        )
+
+    def estilo_texto(size=14, weight=None, color=TEXTO_SECUNDARIO):
+        return ft.TextStyle(size=size, weight=weight, color=color, font_family="Inter")
+
+    # =============================================
     # FUNÇÕES / HANDLERS
     # =============================================
 
-    def show_snack(msg, color=ft.Colors.GREEN_600):
+    def show_snack(msg, color=SUCESSO):
         antigo = publish_state.get("snack")
         if antigo is not None and antigo in page.overlay:
             page.overlay.remove(antigo)
-        snack = ft.SnackBar(ft.Text(str(msg)), bgcolor=color, open=True)
+        snack = ft.SnackBar(
+            ft.Text(str(msg), font_family="Inter"),
+            bgcolor=color,
+            open=True,
+            behavior=ft.SnackBarBehavior.FLOATING,
+            shape=ft.RoundedRectangleBorder(radius=10),
+        )
         publish_state["snack"] = snack
         page.overlay.append(snack)
         page.update()
@@ -1391,29 +1440,49 @@ def main(page: ft.Page):
     rail = ft.NavigationRail(
         selected_index=0,
         label_type=ft.NavigationRailLabelType.ALL,
-        min_width=100,
+        min_width=90,
         min_extended_width=200,
-        bgcolor=ft.Colors.BLUE_50,
+        bgcolor=PRIMARIA_CLARA,
+        selected_icon_content=ft.Icon(ft.Icons.PERSON_ADD, color=ft.Colors.WHITE),
+        indicator_color=PRIMARIA,
+        indicator_border_radius=12,
         group_alignment=-0.9,
         destinations=[
             ft.NavigationRailDestination(
-                icon=ft.Icons.PERSON_ADD_OUTLINED, selected_icon=ft.Icons.PERSON_ADD, label="Alunos"
+                icon=ft.Icon(ft.Icons.PERSON_ADD_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.PERSON_ADD, color=ft.Colors.WHITE),
+                label="Alunos",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.CLASS_OUTLINED, selected_icon=ft.Icons.CLASS_, label="Turmas"
+                icon=ft.Icon(ft.Icons.CLASS_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.CLASS_, color=ft.Colors.WHITE),
+                label="Turmas",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.GROUPS_OUTLINED, selected_icon=ft.Icons.GROUPS, label="Equipe"
+                icon=ft.Icon(ft.Icons.GROUPS_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.GROUPS, color=ft.Colors.WHITE),
+                label="Equipe",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.CHECKLIST_RTL_OUTLINED, selected_icon=ft.Icons.CHECKLIST_RTL, label="Chamada"
+                icon=ft.Icon(ft.Icons.CHECKLIST_RTL_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.CHECKLIST_RTL, color=ft.Colors.WHITE),
+                label="Chamada",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.PEOPLE_OUTLINED, selected_icon=ft.Icons.PEOPLE, label="Visitantes"
+                icon=ft.Icon(ft.Icons.PEOPLE_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.PEOPLE, color=ft.Colors.WHITE),
+                label="Visitantes",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
             ft.NavigationRailDestination(
-                icon=ft.Icons.CLOUD_SYNC_OUTLINED, selected_icon=ft.Icons.CLOUD_SYNC,
-                label="Sincronizar"
+                icon=ft.Icon(ft.Icons.CLOUD_SYNC_OUTLINED, color=TEXTO_SECUNDARIO),
+                selected_icon=ft.Icon(ft.Icons.CLOUD_SYNC, color=ft.Colors.WHITE),
+                label="Sincronizar",
+                label_content_style=ft.TextStyle(font_family="Inter", size=13),
             ),
         ],
         on_change=rail_changed,
@@ -1431,7 +1500,7 @@ def main(page: ft.Page):
         ft.Row(
             [
                 rail,
-                ft.VerticalDivider(width=1),
+                ft.VerticalDivider(width=1, color=BORDA),
                 ft.Column([alunos_view, turmas_view, equipe_view, chamada_view,
                            visitantes_view, publish_view], expand=True),
             ],
