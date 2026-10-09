@@ -267,8 +267,6 @@ def health():
         'origens_permitidas': len(ALLOWED_ORIGINS),
         'emails_permitidos': len(API_ALLOWED_EMAILS) > 0,
         'sync_configurado': bool(SYNC_TOKEN and GITHUB_TOKEN and GITHUB_REPO),
-        'github_token_definido': bool(GITHUB_TOKEN),
-        'github_repo_definido': bool(GITHUB_REPO),
         'pendentes_publicar': pendentes,
     })
 
