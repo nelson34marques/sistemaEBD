@@ -1,2 +1,7 @@
-flet==1.0.0
+flet==1.0.4
+flet-desktop==1.0.4
 requests>=2.31.0
+
+# Ferramentas de build do executável (só precisas no PC de desenvolvimento)
+flet-cli==1.0.4
+pyinstaller==6.22.3

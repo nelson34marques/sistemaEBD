@@ -43,6 +43,94 @@ def load_config():
 
 CONFIG = load_config()
 
+LOG_ERRO_PATH = os.path.join(BASE_DIR, 'erro.log')
+
+
+def _mostrar_caixa(titulo, mensagem, erro=False):
+    try:
+        import ctypes
+        icone = 0x10 if erro else 0x40
+        ctypes.windll.user32.MessageBoxW(0, mensagem, titulo, 0x1000 | icone)
+    except Exception:
+        pass
+
+
+def _registar_erro(exc_type, exc, tb):
+    try:
+        import traceback
+        texto = ''.join(traceback.format_exception(exc_type, exc, tb))
+        with open(LOG_ERRO_PATH, 'a', encoding='utf-8') as f:
+            f.write(f'\n===== {datetime.now():%Y-%m-%d %H:%M:%S} =====\n{texto}')
+        if getattr(sys, 'frozen', False):
+            _mostrar_caixa(
+                'Secretaria EBD - Erro',
+                'Ocorreu um erro inesperado e o programa não pôde continuar.\n\n'
+                f'Detalhes do erro guardados em:\n{LOG_ERRO_PATH}\n\n'
+                'Abra o programa novamente. Se o problema continuar, envie o '
+                'ficheiro erro.log para suporte.',
+                erro=True,
+            )
+    except Exception:
+        pass
+
+
+def _instalar_tratamento_erros():
+    import faulthandler
+    import threading
+
+    try:
+        faulthandler.enable(file=open(LOG_ERRO_PATH, 'a', encoding='utf-8'))
+    except OSError:
+        pass
+
+    def excepthook(exc_type, exc, tb):
+        _registar_erro(exc_type, exc, tb)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    def thread_excepthook(args):
+        _registar_erro(args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = excepthook
+    threading.excepthook = thread_excepthook
+
+
+def _flet_runtime_ja_preparado():
+    if not getattr(sys, 'frozen', False) or sys.platform != 'win32':
+        return True
+    try:
+        import flet_desktop
+        import flet_desktop.version
+        zip_embutido = os.path.join(flet_desktop.get_package_bin_dir(), 'flet-windows.zip')
+        if not os.path.isfile(zip_embutido):
+            return True
+        fingerprint = None
+        sidecar = zip_embutido + '.sha256'
+        if os.path.isfile(sidecar):
+            with open(sidecar, encoding='ascii') as ficheiro:
+                fingerprint = ficheiro.read().split()[0][:12]
+        nome = f'flet-desktop-full-{flet_desktop.version.version}'
+        if fingerprint:
+            nome = f'{nome}-{fingerprint}'
+        return os.path.isdir(os.path.join(os.path.expanduser('~'), '.flet', 'client', nome))
+    except Exception:
+        return True
+
+
+def _aviso_primeira_execucao():
+    if _flet_runtime_ja_preparado():
+        return
+    _mostrar_caixa(
+        'Secretaria EBD - Primeira execução',
+        'A preparar o aplicativo pela primeira vez.\n\n'
+        'Isto pode demorar até 1 minuto. Quando terminar, o programa abre '
+        'sozinho.\nApós esta preparação, as próximas aberturas são imediatas.',
+    )
+    try:
+        import flet_desktop
+        flet_desktop.ensure_client_cached()
+    except Exception as exc:
+        _registar_erro(type(exc), exc, exc.__traceback__)
+
 
 def main(page: ft.Page):
     page.title = "Secretaria EBD"
@@ -1506,4 +1594,6 @@ def main(page: ft.Page):
     load_alunos()
 
 if __name__ == "__main__":
+    _instalar_tratamento_erros()
+    _aviso_primeira_execucao()
     ft.run(main)

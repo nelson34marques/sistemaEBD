@@ -6,3 +6,5 @@ config.json
 sync_state.json
 build/
 dist/
+*.spec
+erro.log

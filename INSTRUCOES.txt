@@ -1,0 +1,20 @@
+SECRETARIA EBD — Instalação no Windows 10
+=========================================
+
+1. Descompacte este .zip numa pasta qualquer (ex.: Ambiente de Trabalho ou C:\SecretariaEBD).
+2. Abra a pasta "Secretaria EBD" e clique duas vezes em "Secretaria EBD.exe".
+3. Na PRIMEIRA execução pode demorar até 1 minuto, com a mensagem
+   "A preparar o aplicativo pela primeira vez". Aguarde — o programa abre sozinho.
+   Nas próximas aberturas é imediato.
+4. Se o Windows mostrar "Windows protegeu o seu PC": clique em "Mais informações"
+   e depois em "Executar assim mesmo". Este aviso aparece apenas na primeira vez.
+
+IMPORTANTE
+----------
+- Não mover nem apagar os ficheiros config.json e database.sqlite que estão
+  dentro da pasta "Secretaria EBD" — são a configuração e a base de dados.
+- Para guardar uma cópia de segurança dos dados, copie o ficheiro database.sqlite.
+- Se o programa fechar com um erro, é criado o ficheiro "erro.log" dentro da
+  pasta "Secretaria EBD". Envie esse ficheiro para suporte.
+- Para atualizar a app: substituir a pasta "Secretaria EBD" pela nova versão,
+  mantendo os ficheiros config.json e database.sqlite.
